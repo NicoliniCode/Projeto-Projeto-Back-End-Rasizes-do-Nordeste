@@ -1,0 +1,289 @@
+openapi: 3.0.3
+info:
+
+  title: API - Raízes do Nordeste
+  version: 1.0.0
+  description: >-
+    API acadêmica da rede Raízes do Nordeste. Pagamentos são exclusivamente simulados;
+    não enviar dados reais de cartões. Documentação equivalente às rotas implementadas.
+
+servers:
+  - url: http://localhost:3000/api
+    description: Execução local
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Erro:
+      type: object
+      required: [error, message, details, timestamp, path, requestId]
+      properties:
+        error: {type: string, example: ESTOQUE_INSUFICIENTE}
+        message: {type: string, example: Estoque insuficiente para produto 101.}
+        details:
+          type: array
+          items: {type: object, additionalProperties: true}
+        timestamp: {type: string, format: date-time}
+        path: {type: string, example: /api/pedidos}
+        requestId: {type: string, format: uuid}
+
+    ItemEntrada:
+      type: object
+      required: [produtoId, quantidade]
+      properties:
+        produtoId: {type: integer, example: 101}
+        quantidade: {type: integer, minimum: 1, example: 2}
+
+    NovoPedido:
+      type: object
+      required: [unidadeId, canalPedido, itens, formaPagamento]
+      properties:
+        unidadeId: {type: integer, example: 1}
+        clienteId: {type: integer, description: Obrigatório para equipe; opcional para CLIENTE autenticado, example: 2}
+        canalPedido: {type: string, enum: [APP, TOTEM, BALCAO, PICKUP, WEB], example: TOTEM}
+        formaPagamento: {type: string, enum: [MOCK], example: MOCK}
+        itens:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/ItemEntrada'}
+
+    Pedido:
+      type: object
+      properties:
+        id: {type: integer, example: 1}
+        unidadeId: {type: integer, example: 1}
+        clienteId: {type: integer, example: 2}
+        canalPedido: {type: string, example: TOTEM}
+        total: {type: string, example: '39.80'}
+        status: {type: string, example: AGUARDANDO_PAGAMENTO}
+        itens: {type: array, items: {type: object, additionalProperties: true}}
+    PagamentoMock:
+      type: object
+      required: [chaveIdempotencia, resultadoMock]
+      properties:
+        chaveIdempotencia: {type: string, minLength: 8, example: teste-pgto-001}
+        resultadoMock: {type: string, enum: [APROVADO, RECUSADO, ERRO], example: APROVADO}
+
+  responses:
+    NaoAutenticado:
+      description: Sem token ou token inválido
+      content: {application/json: {schema: {$ref: '#/components/schemas/Erro'}}}
+    SemPermissao:
+      description: Perfil ou unidade sem acesso
+      content: {application/json: {schema: {$ref: '#/components/schemas/Erro'}}}
+    NaoEncontrado:
+      description: Recurso inexistente
+      content: {application/json: {schema: {$ref: '#/components/schemas/Erro'}}}
+    Conflito:
+      description: Estoque insuficiente, status inválido ou chave conflitante
+      content: {application/json: {schema: {$ref: '#/components/schemas/Erro'}}}
+    Validacao:
+      description: Requisição inválida
+      content: {application/json: {schema: {$ref: '#/components/schemas/Erro'}}}
+paths:
+
+  /health:
+    get:
+      summary: Verificar funcionamento HTTP da API
+      tags: [Infraestrutura]
+      responses:
+        '200': {description: Serviço disponível}
+
+  /auth/login:
+    post:
+      summary: Autenticar usuário e obter token JWT
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, senha]
+              properties:
+                email: {type: string, format: email, example: cliente@raizes.local}
+                senha: {type: string, example: 'Cliente123!'}
+      responses:
+        '200':
+          description: Token emitido
+          content:
+            application/json:
+              example: {accessToken: 'jwt...', tokenType: Bearer, expiresIn: 7200, user: {id: 2, perfil: CLIENTE, unidadeId: null}}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+  /unidades:
+    get:
+      summary: Listar unidades ativas da rede
+      tags: [Unidades]
+      responses:
+        '200': {description: Lista de unidades, content: {application/json: {example: [{id: 1, nome: Recife - Centro, cidade: Recife}]}}}
+
+  /unidades/{id}/cardapio:
+    get:
+      summary: Obter produtos disponíveis no cardápio da unidade
+      tags: [Unidades]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Cardápio com preços e nomes, content: {application/json: {example: {unidade: {id: 1, nome: Recife - Centro}, itens: [{produtoId: 101, nome: Cuscuz com queijo, preco: '19.90'}]}}}}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+  /unidades/{id}/estoque:
+    get:
+      summary: Consultar saldos do estoque por unidade
+      description: ADMIN ou GERENTE vinculado à unidade
+      tags: [Estoque]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Estoque, content: {application/json: {example: {unidadeId: 1, estoques: [{produtoId: 101, quantidade: 30}]}}}}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '422': {$ref: '#/components/responses/Validacao'}
+  /pedidos:
+
+    post:
+      summary: Criar pedido com canal obrigatório e itens validados
+      description: CLIENTE (exceto BALCAO) ou equipe autorizada; equipe informa clienteId. Não baixa estoque antes do pagamento.
+      tags: [Pedidos]
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NovoPedido'}
+            example: {unidadeId: 1, clienteId: 2, canalPedido: TOTEM, formaPagamento: MOCK, itens: [{produtoId: 101, quantidade: 2}]}
+
+      responses:
+        '201': {description: Pedido salvo, content: {application/json: {schema: {$ref: '#/components/schemas/Pedido'}}}}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '409': {$ref: '#/components/responses/Conflito'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+    get:
+      summary: Listar pedidos com paginação e filtros de canal/status
+      description: Clientes veem somente os próprios pedidos; equipe vê somente a sua unidade; ADMIN vê todos.
+      tags: [Pedidos]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: canalPedido, in: query, schema: {type: string, enum: [APP, TOTEM, BALCAO, PICKUP, WEB]}}
+        - {name: status, in: query, schema: {type: string, enum: [AGUARDANDO_PAGAMENTO, PAGAMENTO_RECUSADO, PAGO, EM_PREPARO, PRONTO, ENTREGUE, CANCELADO]}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 10}}
+      responses:
+        '200': {description: Pedidos e metadados de paginação}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+  /pedidos/{id}:
+    get:
+      summary: Consultar detalhes de um pedido
+      tags: [Pedidos]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Pedido com itens e pagamentos, content: {application/json: {schema: {$ref: '#/components/schemas/Pedido'}}}}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+
+  /pedidos/{id}/pagamentos/mock:
+    post:
+      summary: Simular aprovação, recusa ou falha técnica do pagamento
+      description: >-
+        Requer MOCK_PAYMENTS_ENABLED=true e ambiente não-produtivo. A chave garante replay sequencial sem baixa duplicada;
+        aprovação valida novamente estoque e efetua baixa transacional. NÃO processa pagamentos reais.
+
+      tags: [Pagamentos]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PagamentoMock'}
+            examples:
+              aprovado: {value: {chaveIdempotencia: teste-aprovado-001, resultadoMock: APROVADO}}
+              recusado: {value: {chaveIdempotencia: teste-recusado-002, resultadoMock: RECUSADO}}
+              falha: {value: {chaveIdempotencia: teste-erro-003, resultadoMock: ERRO}}
+      responses:
+        '200':
+          description: Resultado simulado registrado ou repetido
+          content:
+            application/json:
+              example: {repetido: false, pagamento: {id: 1, status: APROVADO, valor: '39.80'}, pedido: {id: 1, status: PAGO}}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '409': {$ref: '#/components/responses/Conflito'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+  /pedidos/{id}/status:
+
+    patch:
+      summary: Avançar status operacional (PAGO, EM_PREPARO, PRONTO, ENTREGUE)
+      description: COZINHA pode marcar EM_PREPARO/PRONTO; ATENDENTE pode marcar ENTREGUE; GERENTE/ADMIN respeitam transições.
+      tags: [Pedidos]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [EM_PREPARO, PRONTO, ENTREGUE], example: EM_PREPARO}
+
+      responses:
+        '200': {description: Pedido atualizado}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '409': {$ref: '#/components/responses/Conflito'}
+        '422': {$ref: '#/components/responses/Validacao'}
+
+  /pedidos/{id}/cancelamento:
+    post:
+      summary: Cancelar pedido ainda não pago
+      tags: [Pedidos]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200': {description: Pedido cancelado}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '404': {$ref: '#/components/responses/NaoEncontrado'}
+        '409': {$ref: '#/components/responses/Conflito'}
+
+  /auditoria:
+
+    get:
+      summary: Consultar ações registradas com escopo por unidade
+      description: ADMIN vê todos; GERENTE é limitado à própria unidade.
+      tags: [Auditoria]
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: unidadeId, in: query, schema: {type: integer}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: Lista de ações com responsável, alvo, unidade e data}
+        '401': {$ref: '#/components/responses/NaoAutenticado'}
+        '403': {$ref: '#/components/responses/SemPermissao'}
+        '422': {$ref: '#/components/responses/Validacao'}

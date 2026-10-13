@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Perfil {
+  ADMIN
+  GERENTE
+  ATENDENTE
+  COZINHA
+  CLIENTE
+}
+enum CanalPedido {
+  APP
+  TOTEM
+  BALCAO
+  PICKUP
+  WEB
+}
+enum StatusPedido {
+  AGUARDANDO_PAGAMENTO
+  PAGAMENTO_RECUSADO
+  PAGO
+  EM_PREPARO
+  PRONTO
+  ENTREGUE
+  CANCELADO
+}
+enum StatusPagamento {
+  APROVADO
+  RECUSADO
+  ERRO
+}
+
+model Usuario {
+  id          Int        @id @default(autoincrement())
+  nome        String     @db.VarChar(120)
+  email       String     @unique @db.VarChar(180)
+  senhaHash   String
+  perfil      Perfil     @default(CLIENTE)
+  unidadeId   Int?
+  unidade     Unidade?   @relation(fields: [unidadeId], references: [id])
+  ativo       Boolean    @default(true)
+  criadoEm    DateTime   @default(now())
+  pedidos     Pedido[]
+  auditorias  Auditoria[]
+}
+
+model Unidade {
+  id         Int         @id @default(autoincrement())
+  nome       String      @db.VarChar(120)
+  cidade     String      @db.VarChar(120)
+  ativo      Boolean     @default(true)
+  usuarios   Usuario[]
+  cardapio   ItemCardapio[]
+  estoques   Estoque[]
+  pedidos    Pedido[]
+}
+
+model Produto {
+  id          Int          @id @default(autoincrement())
+  nome        String       @db.VarChar(120)
+  descricao   String?      @db.VarChar(500)
+  ativo       Boolean      @default(true)
+  cardapios   ItemCardapio[]
+  estoques    Estoque[]
+  itensPedido ItemPedido[]
+}
+
+model ItemCardapio {
+  id        Int      @id @default(autoincrement())
+  unidadeId Int
+  produtoId Int
+  preco     Decimal  @db.Decimal(10, 2)
+  disponivel Boolean @default(true)
+  unidade   Unidade  @relation(fields: [unidadeId], references: [id])
+  produto   Produto  @relation(fields: [produtoId], references: [id])
+  @@unique([unidadeId, produtoId])
+  @@index([unidadeId, disponivel])
+}
+
+model Estoque {
+  id         Int      @id @default(autoincrement())
+  unidadeId  Int
+  produtoId  Int
+  quantidade Int      @default(0)
+  unidade    Unidade  @relation(fields: [unidadeId], references: [id])
+  produto    Produto  @relation(fields: [produtoId], references: [id])
+  @@unique([unidadeId, produtoId])
+}
+
+model Pedido {
+  id            Int         @id @default(autoincrement())
+  clienteId     Int
+  unidadeId     Int
+  canalPedido   CanalPedido
+  status        StatusPedido @default(AGUARDANDO_PAGAMENTO)
+  total         Decimal     @db.Decimal(10, 2)
+  criadoEm      DateTime    @default(now())
+  atualizadoEm  DateTime    @updatedAt
+  cliente       Usuario     @relation(fields: [clienteId], references: [id])
+  unidade       Unidade     @relation(fields: [unidadeId], references: [id])
+  itens         ItemPedido[]
+  pagamentos    Pagamento[]
+  @@index([unidadeId, canalPedido, status])
+  @@index([clienteId, criadoEm])
+}
+
+model ItemPedido {
+  id            Int     @id @default(autoincrement())
+  pedidoId      Int
+  produtoId     Int
+  quantidade    Int
+  precoUnitario Decimal @db.Decimal(10, 2)
+  subtotal      Decimal @db.Decimal(10, 2)
+  pedido        Pedido  @relation(fields: [pedidoId], references: [id])
+  produto       Produto @relation(fields: [produtoId], references: [id])
+}
+
+model Pagamento {
+  id                 Int             @id @default(autoincrement())
+  pedidoId           Int
+  chaveIdempotencia  String          @db.VarChar(120)
+  status             StatusPagamento
+  resultadoSimulado  String          @db.VarChar(20)
+  valor              Decimal         @db.Decimal(10, 2)
+  criadoEm           DateTime        @default(now())
+  pedido             Pedido          @relation(fields: [pedidoId], references: [id])
+  @@unique([pedidoId, chaveIdempotencia])
+  @@index([pedidoId])
+}
+
+model Auditoria {
+  id         Int       @id @default(autoincrement())
+  atorId     Int?
+  acao       String    @db.VarChar(80)
+  entidade   String    @db.VarChar(60)
+  entidadeId Int
+  unidadeId  Int?
+  dados      Json?
+  criadoEm   DateTime  @default(now())
+  ator       Usuario?  @relation(fields: [atorId], references: [id])
+  @@index([unidadeId, criadoEm])
+}
